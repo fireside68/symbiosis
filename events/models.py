@@ -11,7 +11,7 @@ class Tenant(models.Model):
     def __str__(self):
         return self.name
     
-class Device(models.TextChoices):
+class Device(models.Model):
     class Kind(models.TextChoices):
         IDS = "ids"
         FIREWALL = "firewall"
