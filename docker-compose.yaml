@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: symbiosis_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: symbiosis
+      POSTGRES_PASSWORD: symbiosis
+      POSTGRES_DB: symbiosis
+    ports:
+    - "5433:5432"
+    volumes:
+    - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready", "-U", "symbiosis" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  redis:
+    image: redis:7
+    container_name: symbiosis_redis
+    restart: always
+    ports:
+    - "6379:6379"
+    volumes:
+    - redisdata:/data
+    command: redis-server --maxmemory-policy noeviction
+
+volumes:
+  pgdata:
+  redisdata:
