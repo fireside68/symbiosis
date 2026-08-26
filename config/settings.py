@@ -111,6 +111,10 @@ USE_TZ = True
 
 REDIS_URL = os.environ.get("REDIS_URL")
 
+CELERY_BROKER_URL = REDIS_URL or "memory://"
+CELERY_TASK_ALWAYS_EAGER = REDIS_URL is None  # if no redis, run tasks synchronously for dev
+CELERY_TASK_EAGER_PROPAGATES = True  # if no redis, raise exceptions in tasks for dev
+
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/

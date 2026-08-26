@@ -17,6 +17,9 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 
+from ingest.views import receive_alert
+
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('ingest/', receive_alert),
 ]
