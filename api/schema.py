@@ -10,7 +10,7 @@ from django.contrib.auth import authenticate, login as django_login, logout as d
 from django.db import transaction
 from graphql import GraphQLError
 
-from events.models import AnalystAction, Event
+from events.models import AnalystAction, Event, Membership
 from ingest.tasks import broadcast
 
 
@@ -63,22 +63,31 @@ def _require_user(info: strawberry.Info):
     return user
 
 
+def _require_member(info: strawberry.Info, tenant_id: int):
+    """Authenticated AND a member of this specific tenant — the piece
+    _current_user alone can't prove."""
+    user = _require_user(info)
+    if not Membership.objects.filter(user=user, tenant_id=tenant_id).exists():
+        raise GraphQLError("Not a member of this tenant")
+    return user
+
+
 @strawberry.type
 class Query:
     @strawberry_django.field
     def events(
         self,
         info: strawberry.Info,
-        # tenant_id is still an explicit arg, not derived from the analyst:
-        # there's no User<->Tenant membership model yet, so this only proves
-        # *someone* is logged in, not that they're allowed to see this tenant.
+        # tenant_id is still a caller-supplied arg (an analyst may belong to
+        # several), but _require_member checks they're actually a member of
+        # it rather than just logged in somewhere.
         tenant_id: int,
         status: Optional[str] = None,
         severity: Optional[str] = None,
         first: int = 50,
         after: Optional[strawberry.ID] = None,  # cursor = last-seen id; offset breaks on a live feed
     ) -> list[EventType]:
-        _require_user(info)
+        _require_member(info, tenant_id)
         qs = Event.objects.select_related("device").filter(tenant_id=tenant_id)
         if status:
             qs = qs.filter(status=status)
@@ -116,10 +125,14 @@ class Mutation:
         user = _current_user(info)
         if user is None:
             return ClaimResult(ok=False, message="Authentication required", event=None)
+        member_tenant_ids = Membership.objects.filter(user=user).values_list("tenant_id", flat=True)
         with transaction.atomic():
-            rows = Event.objects.filter(id=id, status=Event.Status.OPEN).update(
-                status=Event.Status.IN_PROGRESS, claimed_by=user
-            )
+            # tenant_id__in folds "not your tenant" into the same miss as
+            # "already claimed" / "doesn't exist" — no separate error, so a
+            # caller can't use this to probe which event IDs exist elsewhere.
+            rows = Event.objects.filter(
+                id=id, status=Event.Status.OPEN, tenant_id__in=member_tenant_ids
+            ).update(status=Event.Status.IN_PROGRESS, claimed_by=user)
             if rows == 0:
                 return ClaimResult(ok=False, message="Already claimed", event=None)
             event = Event.objects.get(id=id)
@@ -136,10 +149,11 @@ class Mutation:
         user = _current_user(info)
         if user is None:
             return ClaimResult(ok=False, message="Authentication required", event=None)
+        member_tenant_ids = Membership.objects.filter(user=user).values_list("tenant_id", flat=True)
         with transaction.atomic():
-            rows = Event.objects.filter(id=id, status=Event.Status.IN_PROGRESS).update(
-                status=Event.Status.RESOLVED, resolution_note=note
-            )
+            rows = Event.objects.filter(
+                id=id, status=Event.Status.IN_PROGRESS, tenant_id__in=member_tenant_ids
+            ).update(status=Event.Status.RESOLVED, resolution_note=note)
             if rows == 0:
                 return ClaimResult(ok=False, message="Not in progress", event=None)
             event = Event.objects.get(id=id)
@@ -173,6 +187,11 @@ class Subscription:
         user = ws.scope.get("user")
         if not (user and user.is_authenticated):
             raise GraphQLError("Authentication required")
+        is_member = await sync_to_async(
+            Membership.objects.filter(user=user, tenant_id=tenant_id).exists
+        )()
+        if not is_member:
+            raise GraphQLError("Not a member of this tenant")
         async with ws.listen_to_channel(
             "event.update", groups=[f"tenant_{tenant_id}"]
         ) as messages:

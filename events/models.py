@@ -10,7 +10,34 @@ class Tenant(models.Model):
 
     def __str__(self):
         return self.name
-    
+
+
+class Membership(models.Model):
+    """Which analysts can see which tenants. Unlike the audit trail below,
+    this is a plain ACL, not a historical record, so CASCADE is fine here —
+    removing a user or a tenant should just drop the grant, not be blocked."""
+
+    class Role(models.TextChoices):
+        ANALYST = "analyst"
+        ADMIN = "admin"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="memberships"
+    )
+    tenant = models.ForeignKey(
+        Tenant, on_delete=models.CASCADE, related_name="memberships"
+    )
+    role = models.CharField(max_length=20, choices=Role.choices, default=Role.ANALYST)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["user", "tenant"], name="unique_membership_per_tenant")
+        ]
+
+    def __str__(self):
+        return f"{self.user} @ {self.tenant} ({self.role})"
+
 class Device(models.Model):
     class Kind(models.TextChoices):
         IDS = "ids"
