@@ -1,4 +1,6 @@
+from asgiref.sync import async_to_sync
 from celery import shared_task
+from channels.layers import get_channel_layer
 from django.utils.dateparse import parse_datetime
 
 from events.models import Device, Event
@@ -10,6 +12,22 @@ SEVERITY_BY_HINT = {
     "medium": Event.Severity.MEDIUM,
     "low": Event.Severity.LOW,
 }
+
+
+def broadcast(event, intent: str):
+    """Push an event change to every analyst watching this tenant's feed.
+    Sync entry point (called from a Celery task and from on_commit callbacks
+    inside sync GraphQL mutations) — group_send itself is async, so
+    async_to_sync bridges it, mirroring listen_to_channel on the read side.
+    """
+    layer = get_channel_layer()
+    if layer is None:  # no channel layer configured; nothing to notify
+        return
+    async_to_sync(layer.group_send)(
+        f"tenant_{event.tenant_id}",
+        {"type": "event.update", "event_id": event.id, "intent": intent},
+    )
+
 
 @shared_task
 def process_raw_alert(raw_alert_id: int):
@@ -42,4 +60,6 @@ def process_raw_alert(raw_alert_id: int):
             summary=summary[:500],
             ),
     )
+    if created:
+        broadcast(event, intent="added")
     return event.id
