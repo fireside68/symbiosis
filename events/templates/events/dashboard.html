@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Symbiosis — Security Ops</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #12151c;
+    --border: #232732;
+    --text: #e6e8eb;
+    --muted: #8b93a1;
+    --accent: #4f8dff;
+    --ok: #35c46d;
+    --bad: #ef5a5a;
+    --critical: #ef4444;
+    --high: #f59e0b;
+    --medium: #eab308;
+    --low: #3b82f6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    font-size: 14px;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header h1 {
+    font-size: 16px;
+    margin: 0;
+    letter-spacing: 0.02em;
+  }
+  header h1 span { color: var(--muted); font-weight: 400; }
+  .header-right { display: flex; align-items: center; gap: 14px; }
+  select, input, button {
+    background: #181c25;
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.1); }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); transition: background 0.2s; }
+  .dot.live { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+
+  #login-view {
+    max-width: 360px;
+    margin: 80px auto;
+    padding: 28px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  #login-view h2 { margin-top: 0; font-size: 18px; }
+  #login-view form { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+  #login-error { color: var(--bad); font-size: 13px; min-height: 16px; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 10px; line-height: 1.5; }
+
+  main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+  tr.flash { animation: flash 900ms ease-out; }
+  @keyframes flash { from { background: rgba(79,141,255,0.25); } to { background: transparent; } }
+
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+  .sev-critical { background: rgba(239,68,68,0.15); color: var(--critical); }
+  .sev-high { background: rgba(245,158,11,0.15); color: var(--high); }
+  .sev-medium { background: rgba(234,179,8,0.15); color: var(--medium); }
+  .sev-low { background: rgba(59,130,246,0.15); color: var(--low); }
+
+  .status-open { color: var(--bad); }
+  .status-in_progress { color: var(--high); }
+  .status-resolved { color: var(--ok); }
+
+  .actions { display: flex; gap: 6px; }
+  .empty { color: var(--muted); text-align: center; padding: 40px 0; }
+  #toast {
+    position: fixed; bottom: 20px; right: 20px;
+    background: var(--panel); border: 1px solid var(--border);
+    padding: 10px 16px; border-radius: 8px; font-size: 13px;
+    display: none;
+  }
+  #toast.bad { border-color: var(--bad); color: var(--bad); }
+  #toast.ok { border-color: var(--ok); color: var(--ok); }
+
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="login-view">
+  <h2>Symbiosis <span style="color: var(--muted); font-weight: 400;">— sign in</span></h2>
+  <form id="login-form">
+    <input id="login-username" placeholder="username" autocomplete="username" required>
+    <input id="login-password" type="password" placeholder="password" autocomplete="current-password" required>
+    <button class="primary" type="submit">Sign in</button>
+  </form>
+  <div id="login-error"></div>
+  <div class="hint">Demo accounts: <code>analyst / analystpw1</code> (Acme Robotics only).
+  Seed with <code>python manage.py seed_demo</code>.</div>
+</div>
+
+<div id="app-view" class="hidden">
+  <header>
+    <h1>Symbiosis <span>security event triage</span></h1>
+    <div class="header-right">
+      <span class="pill"><span id="ws-dot" class="dot"></span><span id="ws-label">connecting…</span></span>
+      <select id="tenant-select"></select>
+      <span class="pill" id="whoami"></span>
+      <button id="logout-btn">Log out</button>
+    </div>
+  </header>
+  <main>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:70px">ID</th>
+          <th style="width:90px">Severity</th>
+          <th>Summary</th>
+          <th style="width:140px">Location</th>
+          <th style="width:110px">Status</th>
+          <th style="width:170px">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="events-body">
+        <tr><td colspan="6" class="empty">Loading…</td></tr>
+      </tbody>
+    </table>
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<script type="module">
+import { createClient } from "https://cdn.jsdelivr.net/npm/graphql-ws@6.3.0/+esm";
+
+const loginView = document.getElementById("login-view");
+const appView = document.getElementById("app-view");
+const loginForm = document.getElementById("login-form");
+const loginError = document.getElementById("login-error");
+const tenantSelect = document.getElementById("tenant-select");
+const whoami = document.getElementById("whoami");
+const eventsBody = document.getElementById("events-body");
+const wsDot = document.getElementById("ws-dot");
+const wsLabel = document.getElementById("ws-label");
+const toast = document.getElementById("toast");
+
+let wsClient = null;
+let unsubscribe = null;
+let currentTenantId = null;
+
+function showToast(message, kind) {
+  toast.textContent = message;
+  toast.className = kind;
+  toast.style.display = "block";
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { toast.style.display = "none"; }, 3000);
+}
+
+async function gql(query, variables) {
+  const resp = await fetch("/graphql/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ query, variables }),
+  });
+  const json = await resp.json();
+  if (json.errors && json.errors.length) {
+    throw new Error(json.errors[0].message);
+  }
+  return json.data;
+}
+
+function severityBadge(sev) {
+  return `<span class="badge sev-${sev}">${sev}</span>`;
+}
+
+function statusLabel(status) {
+  return `<span class="status-${status}">${status.replace("_", " ")}</span>`;
+}
+
+function actionsFor(ev) {
+  if (ev.status === "open") {
+    return `<button data-action="claim" data-id="${ev.id}">Claim</button>`;
+  }
+  if (ev.status === "in_progress") {
+    return `
+      <div class="actions">
+        <input data-note="${ev.id}" placeholder="resolution note" style="width:110px">
+        <button data-action="resolve" data-id="${ev.id}">Resolve</button>
+      </div>`;
+  }
+  return "";
+}
+
+function renderRow(ev) {
+  return `<tr data-id="${ev.id}">
+    <td>#${ev.id}</td>
+    <td>${severityBadge(ev.severity)}</td>
+    <td>${ev.summary}</td>
+    <td>${ev.location}</td>
+    <td>${statusLabel(ev.status)}</td>
+    <td>${actionsFor(ev)}</td>
+  </tr>`;
+}
+
+function upsertRow(ev) {
+  const existing = eventsBody.querySelector(`tr[data-id="${ev.id}"]`);
+  const html = renderRow(ev);
+  if (existing) {
+    existing.outerHTML = html;
+  } else {
+    eventsBody.querySelector(".empty")?.closest("tr")?.remove();
+    eventsBody.insertAdjacentHTML("afterbegin", html);
+  }
+  const row = eventsBody.querySelector(`tr[data-id="${ev.id}"]`);
+  row.classList.add("flash");
+  setTimeout(() => row.classList.remove("flash"), 900);
+}
+
+eventsBody.addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-action]");
+  if (!btn) return;
+  const id = btn.dataset.id;
+  try {
+    if (btn.dataset.action === "claim") {
+      const data = await gql(`mutation($id: ID!) { claimEvent(id: $id) { ok message } }`, { id });
+      if (!data.claimEvent.ok) showToast(data.claimEvent.message, "bad");
+    } else if (btn.dataset.action === "resolve") {
+      const noteInput = eventsBody.querySelector(`input[data-note="${id}"]`);
+      const note = noteInput ? noteInput.value : "";
+      const data = await gql(
+        `mutation($id: ID!, $note: String!) { resolveEvent(id: $id, note: $note) { ok message } }`,
+        { id, note }
+      );
+      if (!data.resolveEvent.ok) showToast(data.resolveEvent.message, "bad");
+    }
+  } catch (err) {
+    showToast(err.message, "bad");
+  }
+});
+
+async function loadEvents(tenantId) {
+  eventsBody.innerHTML = `<tr><td colspan="6" class="empty">Loading…</td></tr>`;
+  const data = await gql(
+    `query($t: Int!) { events(tenantId: $t) { id severity status location summary } }`,
+    { t: tenantId }
+  );
+  eventsBody.innerHTML = "";
+  if (!data.events.length) {
+    eventsBody.innerHTML = `<tr><td colspan="6" class="empty">No events for this tenant.</td></tr>`;
+    return;
+  }
+  for (const ev of data.events) {
+    eventsBody.insertAdjacentHTML("beforeend", renderRow(ev));
+  }
+}
+
+function openSubscription(tenantId) {
+  if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+  if (wsClient) { wsClient.dispose(); wsClient = null; }
+
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  wsClient = createClient({
+    url: `${proto}//${location.host}/graphql/`,
+    on: {
+      connected: () => { wsDot.classList.add("live"); wsLabel.textContent = "live"; },
+      closed: () => { wsDot.classList.remove("live"); wsLabel.textContent = "disconnected"; },
+      error: () => { wsDot.classList.remove("live"); wsLabel.textContent = "error"; },
+    },
+  });
+
+  unsubscribe = wsClient.subscribe(
+    {
+      query: `subscription($t: Int!) {
+        eventUpdates(tenantId: $t) {
+          intent
+          event { id severity status location summary }
+        }
+      }`,
+      variables: { t: tenantId },
+    },
+    {
+      next: (msg) => upsertRow(msg.data.eventUpdates.event),
+      error: (err) => showToast("subscription error: " + err, "bad"),
+      complete: () => {},
+    }
+  );
+}
+
+async function selectTenant(tenantId) {
+  currentTenantId = tenantId;
+  await loadEvents(tenantId);
+  openSubscription(tenantId);
+}
+
+async function enterApp(username) {
+  loginView.classList.add("hidden");
+  appView.classList.remove("hidden");
+  whoami.textContent = `${username}`;
+
+  const data = await gql(`{ myTenants { id name } }`);
+  tenantSelect.innerHTML = data.myTenants
+    .map((t) => `<option value="${t.id}">${t.name}</option>`)
+    .join("");
+
+  if (!data.myTenants.length) {
+    eventsBody.innerHTML = `<tr><td colspan="6" class="empty">No tenant access for this account.</td></tr>`;
+    return;
+  }
+  await selectTenant(parseInt(data.myTenants[0].id, 10));
+}
+
+tenantSelect.addEventListener("change", () => selectTenant(parseInt(tenantSelect.value, 10)));
+
+loginForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  loginError.textContent = "";
+  const username = document.getElementById("login-username").value;
+  const password = document.getElementById("login-password").value;
+  try {
+    const data = await gql(
+      `mutation($u: String!, $p: String!) { login(username: $u, password: $p) { ok message } }`,
+      { u: username, p: password }
+    );
+    if (!data.login.ok) {
+      loginError.textContent = data.login.message;
+      return;
+    }
+    await enterApp(username);
+  } catch (err) {
+    loginError.textContent = err.message;
+  }
+});
+
+document.getElementById("logout-btn").addEventListener("click", async () => {
+  if (unsubscribe) unsubscribe();
+  if (wsClient) wsClient.dispose();
+  await gql(`mutation { logout { ok } }`);
+  appView.classList.add("hidden");
+  loginView.classList.remove("hidden");
+  loginForm.reset();
+});
+
+// On load, check for an existing session so a refresh doesn't force a re-login.
+(async function init() {
+  try {
+    const data = await gql(`{ me }`);
+    if (data.me) await enterApp(data.me);
+  } catch (err) {
+    // no session yet; show login
+  }
+})();
+</script>
+</body>
+</html>
