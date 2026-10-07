@@ -19,10 +19,12 @@ from django.urls import path
 from django.views.decorators.csrf import csrf_exempt
 from strawberry.django.views import GraphQLView
 from api.schema import schema
+from events.views import dashboard
 from ingest.views import receive_alert
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('ingest/', receive_alert),
     path("graphql/", csrf_exempt(GraphQLView.as_view(schema=schema))),
+    path("dashboard/", dashboard),
 ]

@@ -10,8 +10,14 @@ from django.contrib.auth import authenticate, login as django_login, logout as d
 from django.db import transaction
 from graphql import GraphQLError
 
-from events.models import AnalystAction, Event, Membership
+from events.models import AnalystAction, Event, Membership, Tenant
 from ingest.tasks import broadcast
+
+
+@strawberry_django.type(Tenant)
+class TenantType:
+    id: strawberry.auto
+    name: strawberry.auto
 
 
 @strawberry_django.type(Event)
@@ -74,6 +80,20 @@ def _require_member(info: strawberry.Info, tenant_id: int):
 
 @strawberry.type
 class Query:
+    @strawberry_django.field
+    def me(self, info: strawberry.Info) -> Optional[str]:
+        """Lets a client check for an existing session (e.g. on page load
+        after a refresh) without forcing a fresh login."""
+        user = _current_user(info)
+        return user.username if user else None
+
+    @strawberry_django.field
+    def my_tenants(self, info: strawberry.Info) -> list[TenantType]:
+        """Which tenants this analyst can actually open — lets a frontend
+        populate a tenant picker instead of the caller having to know IDs."""
+        user = _require_user(info)
+        return Tenant.objects.filter(memberships__user=user).order_by("name")
+
     @strawberry_django.field
     def events(
         self,
