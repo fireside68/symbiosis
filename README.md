@@ -95,8 +95,10 @@ out across a separate worker, or multiple web processes).
 ## Testing
 
 ```bash
-pip install -r requirements-dev.txt   # adds daphne; see below
-python manage.py test
+pip install -r requirements-dev.txt   # adds daphne + coverage; see below
+python manage.py test                 # SQLite: 48 tests, 3 skipped (Postgres-only)
+
+coverage run manage.py test && coverage report   # 100% on measured app code, see .coveragerc
 ```
 
 `requirements-dev.txt` adds `daphne` on top of `requirements.txt`. It's
@@ -106,17 +108,42 @@ not a runtime dependency — the app is served by `uvicorn` — but
 so it's a hard dependency of testing the subscription at all.
 
 Coverage: the conditional-update race (`claimEvent` called twice on the
-same event), cross-tenant claim/resolve rejection, the `events` query's
-and the subscription's independent auth/membership checks, ingest
-validation (missing/invalid fields, non-object payload, unknown tenant),
-`process_raw_alert`'s idempotency and severity mapping, and `broadcast()`'s
-group/payload shape and no-channel-layer no-op. The subscription test
-also confirms live delivery over an actual Channels `WebsocketCommunicator`
-— i.e. the same mechanism `/dashboard/` depends on, not a mocked stand-in.
+same event — see below for the *real*, multi-thread version of this),
+cross-tenant claim/resolve rejection, the `events` query's filters and
+its and the subscription's independent auth/membership checks, every
+`events`/`ingest` admin page's read-only enforcement (an actual
+add/change/delete attempt, not just checking a method's return value),
+ingest validation (missing/invalid fields, non-object payload, unknown
+tenant), `process_raw_alert`'s idempotency and severity mapping, and
+`broadcast()`'s group/payload shape and no-channel-layer no-op. The
+subscription test confirms live delivery over an actual Channels
+`WebsocketCommunicator` — i.e. the same mechanism `/dashboard/` depends
+on, not a mocked stand-in.
 
-Not covered: the append-only Postgres trigger itself (SQLite, which the
-test suite runs against, has no trigger to exercise — it's config/the
-database's job, not application code's).
+### Postgres-only tests
+
+`events/test_postgres.py` covers two things SQLite genuinely cannot:
+the append-only trigger (`events/migrations/0003`) actually rejecting
+an `UPDATE`/`DELETE` at the database level, and a real-concurrency
+version of the claim race — 10 actual threads with 10 separate
+connections hitting the same conditional `UPDATE` at once via a
+`threading.Barrier`, not two sequential calls in one process. Both are
+skipped automatically unless `DATABASE_URL` points at Postgres:
+
+```bash
+docker compose up -d
+DATABASE_URL=postgres://symbiosis:symbiosis@localhost:5433/symbiosis \
+    python manage.py test
+```
+
+### CI
+
+`.github/workflows/ci.yml` runs on every push/PR: a SQLite job (fast,
+no services, `coverage report --fail-under=90`) and a Postgres job (a
+real `postgres:16` service container, runs the *full* suite against
+it — so the trigger and concurrency tests actually execute instead of
+skipping, and everything else gets exercised against the real engine
+too, not only SQLite).
 
 ## Known gaps
 
