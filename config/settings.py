@@ -80,7 +80,7 @@ REDIS_URL = os.environ.get("REDIS_URL")
 if REDIS_URL:
     CHANNEL_LAYERS = {
         "default": {
-            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "BACKEND": "channels_redis.core.RedisChannelLayer",  # pragma: no cover
             "CONFIG": {"hosts": [REDIS_URL]},
         }
     }

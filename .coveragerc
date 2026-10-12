@@ -1,0 +1,18 @@
+[run]
+source = .
+omit =
+    .venv/*
+    */migrations/*
+    manage.py
+    config/wsgi.py
+    config/asgi.py
+    config/celery.py
+    */tests.py
+    events/test_postgres.py
+    events/management/commands/seed_demo.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __str__
+show_missing = True

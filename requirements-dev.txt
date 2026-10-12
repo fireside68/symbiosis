@@ -6,3 +6,5 @@
 # WebsocketCommunicator, so it's a hard dependency of testing the
 # subscription at all, not an app dependency.
 daphne==4.2.3
+
+coverage==7.16.2
