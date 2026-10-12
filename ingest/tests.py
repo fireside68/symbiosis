@@ -1,12 +1,15 @@
 import json
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
 
 from events.models import Device, Event, Tenant
 from ingest.models import RawAlert
 from ingest.tasks import broadcast, process_raw_alert
+
+User = get_user_model()
 
 
 class ReceiveAlertTests(TestCase):
@@ -203,3 +206,40 @@ class BroadcastTests(TestCase):
             "event_id": self.event.id,
             "intent": "updated",
         })
+
+
+class RawAlertAdminReadOnlyTests(TestCase):
+    """RawAlert is evidence (the untouched device payload) — see
+    ingest/admin.py. Regression coverage for the same reason as
+    events.tests.EventAdminReadOnlyTests: these permission overrides are
+    the actual guarantee, not incidental, so they need a test that
+    actually attempts the forbidden action."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Acme")
+        self.superuser = User.objects.create_superuser("admin", "admin@example.com", "pw12345")
+        self.raw = RawAlert.objects.create(
+            tenant=self.tenant, source_id="dev-1", source_type="ids", payload={"message": "x"}
+        )
+        self.client.force_login(self.superuser)
+
+    def test_cannot_add(self):
+        resp = self.client.get("/admin/ingest/rawalert/add/")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_change_view_is_viewable_but_rejects_a_save(self):
+        self.assertEqual(
+            self.client.get(f"/admin/ingest/rawalert/{self.raw.id}/change/").status_code, 200
+        )
+        resp = self.client.post(
+            f"/admin/ingest/rawalert/{self.raw.id}/change/",
+            data={"payload": '{"message": "tampered"}'},
+        )
+        self.assertEqual(resp.status_code, 403)
+        self.raw.refresh_from_db()
+        self.assertEqual(self.raw.payload, {"message": "x"})
+
+    def test_cannot_delete(self):
+        resp = self.client.post(f"/admin/ingest/rawalert/{self.raw.id}/delete/", data={"post": "yes"})
+        self.assertEqual(resp.status_code, 403)
+        self.assertTrue(RawAlert.objects.filter(id=self.raw.id).exists())

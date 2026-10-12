@@ -5,7 +5,7 @@ from channels.db import database_sync_to_async
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from strawberry.channels import GraphQLWSConsumer
 
@@ -18,7 +18,9 @@ User = get_user_model()
 
 
 class EventFixtureMixin:
-    def make_event(self, tenant, status=Event.Status.OPEN, source_id="dev-1"):
+    def make_event(
+        self, tenant, status=Event.Status.OPEN, severity=Event.Severity.HIGH, source_id="dev-1"
+    ):
         device = Device.objects.create(
             tenant=tenant, kind=Device.Kind.IDS, name=source_id, current_location="loc"
         )
@@ -28,7 +30,7 @@ class EventFixtureMixin:
         return Event.objects.create(
             tenant=tenant,
             occurred_at=timezone.now(),
-            severity=Event.Severity.HIGH,
+            severity=severity,
             status=status,
             device=device,
             location="loc",
@@ -127,6 +129,50 @@ class MembershipScopingTests(GraphQLTestCase, EventFixtureMixin):
         self.assertIn("Not a member of this tenant", data["errors"][0]["message"])
 
 
+class EventsFilterTests(GraphQLTestCase, EventFixtureMixin):
+    def setUp(self):
+        self.acme = Tenant.objects.create(name="Acme")
+        self.member = User.objects.create_user("member", password="pw12345")
+        Membership.objects.create(user=self.member, tenant=self.acme)
+        # Deliberately distinct status/severity so each filter test can only
+        # pass if the query actually applied that filter, not just returned
+        # everything in the tenant.
+        self.open_high = self.make_event(self.acme, source_id="dev-1")
+        self.resolved_low = self.make_event(
+            self.acme, status=Event.Status.RESOLVED, severity=Event.Severity.LOW, source_id="dev-2"
+        )
+        self.open_critical = self.make_event(
+            self.acme, severity=Event.Severity.CRITICAL, source_id="dev-3"
+        )
+        self.login("member", "pw12345")
+
+    def test_filters_by_status(self):
+        data = self.gql(
+            "query($t: Int!, $s: String) { events(tenantId: $t, status: $s) { id } }",
+            {"t": self.acme.id, "s": "resolved"},
+        )
+        self.assertEqual([e["id"] for e in data["data"]["events"]], [str(self.resolved_low.id)])
+
+    def test_filters_by_severity(self):
+        data = self.gql(
+            "query($t: Int!, $sev: String) { events(tenantId: $t, severity: $sev) { id } }",
+            {"t": self.acme.id, "sev": "critical"},
+        )
+        self.assertEqual([e["id"] for e in data["data"]["events"]], [str(self.open_critical.id)])
+
+    def test_after_cursor_excludes_ids_at_or_above_it(self):
+        # order_by("-id"): "after" means "older than this cursor", so the
+        # highest-id fixture used as the cursor must exclude itself.
+        data = self.gql(
+            "query($t: Int!, $after: ID) { events(tenantId: $t, after: $after) { id } }",
+            {"t": self.acme.id, "after": str(self.open_critical.id)},
+        )
+        returned_ids = {int(e["id"]) for e in data["data"]["events"]}
+        self.assertNotIn(self.open_critical.id, returned_ids)
+        self.assertTrue(all(i < self.open_critical.id for i in returned_ids))
+        self.assertIn(self.resolved_low.id, returned_ids)
+
+
 class ClaimResolveTests(GraphQLTestCase, EventFixtureMixin):
     def setUp(self):
         self.acme = Tenant.objects.create(name="Acme")
@@ -186,6 +232,25 @@ class ClaimResolveTests(GraphQLTestCase, EventFixtureMixin):
         self.globex_event.refresh_from_db()
         self.assertEqual(self.globex_event.status, Event.Status.OPEN)
 
+    def test_resolve_unauthenticated_rejected(self):
+        data = self.resolve(self.event.id)
+        self.assertEqual(
+            data["data"]["resolveEvent"],
+            {"ok": False, "message": "Authentication required", "event": None},
+        )
+
+    def test_resolve_cross_tenant_rejected_without_revealing_existence(self):
+        self.globex_event.status = Event.Status.IN_PROGRESS
+        self.globex_event.save(update_fields=["status"])
+        self.login("member", "pw12345")
+        data = self.resolve(self.globex_event.id, "n/a")
+        self.assertFalse(data["data"]["resolveEvent"]["ok"])
+        # Same message as "not in progress" — doesn't confirm the event
+        # exists and *is* in_progress in a tenant the caller can't see.
+        self.assertEqual(data["data"]["resolveEvent"]["message"], "Not in progress")
+        self.globex_event.refresh_from_db()
+        self.assertEqual(self.globex_event.status, Event.Status.IN_PROGRESS)
+
     def test_resolve_requires_in_progress(self):
         self.login("member", "pw12345")
         data = self.resolve(self.event.id, "too early")
@@ -205,16 +270,89 @@ class ClaimResolveTests(GraphQLTestCase, EventFixtureMixin):
         self.assertEqual(action.to_status, Event.Status.RESOLVED)
 
 
-class EventSubscriptionTests(TestCase, EventFixtureMixin):
-    """The subscription's auth/membership check is separate code from the
-    HTTP resolvers' (ws.scope["user"] vs info.context.request.user), so it
-    needs its own coverage, not just an extension of the HTTP tests above."""
+class DashboardViewTests(TestCase):
+    def test_renders_shell(self):
+        resp = self.client.get("/dashboard/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Symbiosis", resp.content)
+
+
+class EventAdminReadOnlyTests(TestCase, EventFixtureMixin):
+    """Regression coverage for events/admin.py's permission overrides —
+    the whole point of making Event/AnalystAction read-only in admin is
+    that the DB-level guarantees (conditional UPDATE, the Postgres
+    append-only trigger) can't be bypassed through a side door. A test
+    that never actually POSTs to these views wouldn't catch a future edit
+    that accidentally re-enabled them."""
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Acme")
-        self.member = User.objects.create_user("member", password="pw12345")
-        Membership.objects.create(user=self.member, tenant=self.tenant)
-        self.event = self.make_event(self.tenant, source_id="acme-dev")
+        self.superuser = User.objects.create_superuser("admin", "admin@example.com", "pw12345")
+        self.event = self.make_event(self.tenant, source_id="dev-1")
+        self.client.force_login(self.superuser)
+
+    def test_cannot_add(self):
+        resp = self.client.get("/admin/events/event/add/")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_change_view_is_viewable_but_rejects_a_save(self):
+        self.assertEqual(self.client.get(f"/admin/events/event/{self.event.id}/change/").status_code, 200)
+        resp = self.client.post(
+            f"/admin/events/event/{self.event.id}/change/", data={"status": "resolved"}
+        )
+        self.assertEqual(resp.status_code, 403)
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.status, Event.Status.OPEN)
+
+    def test_cannot_delete(self):
+        resp = self.client.post(f"/admin/events/event/{self.event.id}/delete/", data={"post": "yes"})
+        self.assertEqual(resp.status_code, 403)
+        self.assertTrue(Event.objects.filter(id=self.event.id).exists())
+
+    def test_analyst_action_cannot_be_edited_or_deleted(self):
+        user = User.objects.create_user("analyst", password="pw12345")
+        action = AnalystAction.objects.create(
+            analyst=user,
+            event=self.event,
+            action=AnalystAction.Action.CLAIM,
+            from_status=Event.Status.OPEN,
+            to_status=Event.Status.IN_PROGRESS,
+        )
+        resp = self.client.post(
+            f"/admin/events/analystaction/{action.id}/change/", data={"action": "resolve"}
+        )
+        self.assertEqual(resp.status_code, 403)
+        action.refresh_from_db()
+        self.assertEqual(action.action, AnalystAction.Action.CLAIM)
+        resp = self.client.post(f"/admin/events/analystaction/{action.id}/delete/", data={"post": "yes"})
+        self.assertEqual(resp.status_code, 403)
+        self.assertTrue(AnalystAction.objects.filter(id=action.id).exists())
+
+
+class EventSubscriptionTests(TransactionTestCase, EventFixtureMixin):
+    """The subscription's auth/membership check is separate code from the
+    HTTP resolvers' (ws.scope["user"] vs info.context.request.user), so it
+    needs its own coverage, not just an extension of the HTTP tests above.
+
+    TransactionTestCase, not TestCase, and fixtures built via
+    database_sync_to_async from inside each async test rather than a plain
+    synchronous setUp(): under SQLite this class worked either way, but
+    under real Postgres a synchronous setUp() reliably raised "the
+    connection is closed" once an async test method followed it — psycopg3
+    is stricter than SQLite about a connection opened on one thread/loop
+    being touched from another. This is the pattern Channels' own docs use
+    for exactly this reason, not an arbitrary choice.
+    """
+
+    async def _setup_fixtures(self):
+        def _create():
+            tenant = Tenant.objects.create(name="Acme")
+            member = User.objects.create_user("member", password="pw12345")
+            Membership.objects.create(user=member, tenant=tenant)
+            event = self.make_event(tenant, source_id="acme-dev")
+            return tenant, member, event
+
+        self.tenant, self.member, self.event = await database_sync_to_async(_create)()
 
     async def _connected_communicator(self, user):
         application = GraphQLWSConsumer.as_asgi(schema=schema)
@@ -246,6 +384,7 @@ class EventSubscriptionTests(TestCase, EventFixtureMixin):
         )
 
     async def test_unauthenticated_subscribe_is_rejected(self):
+        await self._setup_fixtures()
         communicator = await self._connected_communicator(AnonymousUser())
         await self._subscribe(communicator, self.tenant.id)
         # A resolver error raised before the first yield comes back as a
@@ -258,6 +397,7 @@ class EventSubscriptionTests(TestCase, EventFixtureMixin):
         await communicator.disconnect()
 
     async def test_non_member_subscribe_is_rejected(self):
+        await self._setup_fixtures()
         outsider = await database_sync_to_async(User.objects.create_user)(
             "outsider", password="pw12345"
         )
@@ -270,6 +410,7 @@ class EventSubscriptionTests(TestCase, EventFixtureMixin):
         await communicator.disconnect()
 
     async def test_member_receives_broadcast_live(self):
+        await self._setup_fixtures()
         communicator = await self._connected_communicator(self.member)
         await self._subscribe(communicator, self.tenant.id)
 
