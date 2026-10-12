@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test-sqlite:
+    name: Test (SQLite, no services)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - run: pip install -r requirements-dev.txt
+
+      - run: python manage.py check
+
+      - name: Test with coverage
+        run: |
+          coverage run manage.py test
+          coverage report
+          # 90% floor, not a strict 100% gate: the suite happens to be at
+          # 100% today, but pinning CI to that exact number would make it
+          # fail on any new, not-yet-tested line rather than just flagging
+          # coverage dropped — a floor catches real regressions without
+          # being that brittle.
+          coverage report --fail-under=90
+
+  test-postgres:
+    name: Test (Postgres, real DB)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: symbiosis
+          POSTGRES_PASSWORD: symbiosis
+          POSTGRES_DB: symbiosis
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U symbiosis"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://symbiosis:symbiosis@localhost:5432/symbiosis
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - run: pip install -r requirements-dev.txt
+
+      - run: python manage.py check
+
+      - name: Test (full suite against Postgres, incl. trigger + concurrency tests)
+        run: python manage.py test

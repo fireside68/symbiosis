@@ -1,0 +1,10 @@
+# Test/dev only — not needed to run the app.
+-r requirements.txt
+
+# channels.testing's __init__ unconditionally imports daphne.testing
+# (for ChannelsLiveServerTestCase) even when you only want
+# WebsocketCommunicator, so it's a hard dependency of testing the
+# subscription at all, not an app dependency.
+daphne==4.2.3
+
+coverage==7.16.2

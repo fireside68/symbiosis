@@ -14,8 +14,10 @@ import os
 from pathlib import Path
 
 import dj_database_url
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")  # optional; real env vars still win, this just fills gaps
 
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-only-not-secret")
 DEBUG = os.environ.get("DEBUG", "1") == "1"
@@ -78,7 +80,7 @@ REDIS_URL = os.environ.get("REDIS_URL")
 if REDIS_URL:
     CHANNEL_LAYERS = {
         "default": {
-            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "BACKEND": "channels_redis.core.RedisChannelLayer",  # pragma: no cover
             "CONFIG": {"hosts": [REDIS_URL]},
         }
     }

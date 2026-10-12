@@ -1,0 +1,27 @@
+# Direct dependencies only; pip resolves the rest. Regenerate the exact
+# transitive closure with `pip freeze` if you need a fully pinned lockfile.
+
+Django==5.2.17
+dj-database-url==3.1.2
+python-dotenv==1.2.3
+
+# Postgres (prod) — sqlite is the zero-setup default, see config/settings.py
+psycopg[binary]==3.3.4
+
+# Background work + live updates
+celery==5.6.3
+redis==6.4.0
+channels==4.3.2
+channels_redis==4.3.0
+
+# GraphQL API
+strawberry-graphql==0.324.0
+strawberry-graphql-django==0.87.0
+
+# Admin theme
+django-unfold==0.104.1
+
+# Serving
+whitenoise==6.12.0
+uvicorn[standard]==0.52.4
+gunicorn==26.2.0
